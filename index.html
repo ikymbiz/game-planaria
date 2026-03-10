@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Planaria Maze - プラナリア・メイズ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #020617; /* slate-950 */
+            background-image: radial-gradient(#166534 0.5px, transparent 0.5px), radial-gradient(#166534 0.5px, #020617 0.5px);
+            background-size: 40px 40px;
+            background-position: 0 0, 20px 20px;
+            /* スワイプ時の不要なスクロールを防止 */
+            overscroll-behavior-y: none;
+        }
+        #gameCanvas {
+            background-color: #0f172a; /* slate-900 */
+            box-shadow: 0 0 30px rgba(74, 222, 128, 0.15);
+            border: 2px solid #1e293b;
+            border-radius: 12px;
+            /* タッチデバイスでのスワイプ操作をスムーズにするためデフォルトのアクションを無効化 */
+            touch-action: none;
+        }
+        .modal-blur {
+            backdrop-filter: blur(4px);
+        }
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 15px rgba(74, 222, 128, 0.5); }
+            50% { box-shadow: 0 0 25px rgba(74, 222, 128, 0.8); }
+        }
+        .btn-glow:hover {
+            animation: pulse-glow 2s infinite;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4 text-slate-200 font-sans">
+
+    <header class="mb-6 text-center">
+        <h1 class="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-emerald-600 mb-3 tracking-wider drop-shadow-md">
+            Planaria Maze
+        </h1>
+        <div class="flex justify-center gap-8 text-xl font-bold bg-slate-900/80 px-6 py-2 rounded-full border border-slate-700 shadow-lg">
+            <div>Score: <span id="scoreDisplay" class="text-yellow-400">0</span></div>
+            <div>Lives: <span id="livesDisplay" class="text-red-400">3</span></div>
+        </div>
+    </header>
+
+    <div class="relative group">
+        <!-- Canvas -->
+        <canvas id="gameCanvas" width="450" height="450" class="block max-w-full h-auto"></canvas>
+        
+        <!-- UI Modal Overlay -->
+        <div id="uiModal" class="absolute inset-0 bg-slate-950/80 modal-blur flex flex-col items-center justify-center rounded-xl z-10 transition-opacity duration-300">
+            <h2 id="modalTitle" class="text-4xl font-bold mb-6 text-green-400 tracking-widest uppercase shadow-black drop-shadow-lg">Ready?</h2>
+            
+            <button id="actionBtn" class="px-8 py-3 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 rounded-lg text-white font-bold text-xl transition-all transform hover:scale-105 btn-glow shadow-lg shadow-green-900/50">
+                Start Game
+            </button>
+            
+            <!-- AI Message Section -->
+            <div id="aiContainer" class="hidden mt-8 p-5 max-w-sm w-full border border-green-500/30 rounded-lg bg-slate-900/90 shadow-inner relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-green-400 to-transparent opacity-50"></div>
+                <h3 class="text-xs font-bold text-green-500 tracking-widest uppercase mb-2 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    プラナリアの思念
+                </h3>
+                <p id="aiMessage" class="text-sm text-green-100 italic leading-relaxed min-h-[3rem]">
+                    通信中...
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-8 max-w-lg text-center bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow-md">
+        <p class="text-slate-300 mb-2 font-medium">🎮 [矢印キー] または [スワイプ] でプラナリアを操作</p>
+        <p class="text-sm text-slate-400">
+            黄色いドットを全て食べるとクリア。<br>
+            緑の<strong class="text-green-400">分裂薬（パワーエサ）</strong>を食べると、一時的に分裂して無敵状態になり、外敵を捕食できます！
+        </p>
+    </div>
+
+    <script>
+        // --- 1. 定数・設定 ---
+        const TILE_SIZE = 30;
+        const COLS = 15;
+        const ROWS = 15;
+        const CANVAS_SIZE = TILE_SIZE * COLS;
+        const WORKER_URL = 'https://green-credit-a6fb.ikymbiz.workers.dev';
+
+        // マップデータ: 0=壁, 1=ドット, 2=分裂薬(パワーエサ), 3=空白
+        const INITIAL_MAP = [
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,1,1,1,1,1,1,0,1,1,1,1,1,1,0],
+            [0,2,0,0,1,0,1,0,1,0,1,0,0,2,0],
+            [0,1,1,1,1,0,1,1,1,0,1,1,1,1,0],
+            [0,1,0,0,1,0,0,3,0,0,1,0,0,1,0],
+            [0,1,1,1,1,1,1,3,1,1,1,1,1,1,0],
+            [0,0,0,0,1,0,0,3,0,0,1,0,0,0,0],
+            [3,3,3,0,1,0,3,3,3,0,1,0,3,3,3],
+            [0,0,0,0,1,0,0,0,0,0,1,0,0,0,0],
+            [0,1,1,1,1,1,1,0,1,1,1,1,1,1,0],
+            [0,1,0,0,1,0,1,0,1,0,1,0,0,1,0],
+            [0,2,1,0,1,1,1,3,1,1,1,0,1,2,0],
+            [0,0,1,0,1,0,0,0,0,0,1,0,1,0,0],
+            [0,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+        ];
+
+        // --- 2. 状態管理 ---
+        let canvas, ctx;
+        let gameState = 'START'; // START, PLAYING, GAMEOVER, CLEAR
+        let currentMap = [];
+        let score = 0;
+        let lives = 3;
+        let totalDots = 0;
+        let eatenDots = 0;
+        let animationId;
+        
+        let powerMode = false;
+        let powerTimer = 0;
+
+        // タッチ操作用変数
+        let touchStartX = 0;
+        let touchStartY = 0;
+
+        // --- 3. エンティティ定義 ---
+        const player = {
+            x: 0, y: 0, dx: 0, dy: 0, nextDx: 0, nextDy: 0, speed: 1.5,
+            startX: 15 + 7 * TILE_SIZE, startY: 15 + 11 * TILE_SIZE,
+            angle: 0
+        };
+
+        const enemies = [
+            { x:0, y:0, dx:1, dy:0, speed: 1, startX: 15 + 7*TILE_SIZE, startY: 15 + 5*TILE_SIZE, color: '#ef4444' },
+            { x:0, y:0, dx:-1, dy:0, speed: 1, startX: 15 + 6*TILE_SIZE, startY: 15 + 7*TILE_SIZE, color: '#a855f7' },
+            { x:0, y:0, dx:1, dy:0, speed: 1, startX: 15 + 8*TILE_SIZE, startY: 15 + 7*TILE_SIZE, color: '#f97316' }
+        ];
+
+        // --- 4. 初期化処理 ---
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            document.getElementById('actionBtn').addEventListener('click', handleActionBtn);
+            
+            // キーボード操作
+            window.addEventListener('keydown', (e) => {
+                if (gameState !== 'PLAYING') return;
+                switch(e.key) {
+                    case 'ArrowUp':    player.nextDx = 0; player.nextDy = -1; e.preventDefault(); break;
+                    case 'ArrowDown':  player.nextDx = 0; player.nextDy = 1; e.preventDefault(); break;
+                    case 'ArrowLeft':  player.nextDx = -1; player.nextDy = 0; e.preventDefault(); break;
+                    case 'ArrowRight': player.nextDx = 1; player.nextDy = 0; e.preventDefault(); break;
+                }
+            });
+
+            // スワイプ（タッチ）操作
+            canvas.addEventListener('touchstart', (e) => {
+                if (gameState !== 'PLAYING') return;
+                touchStartX = e.changedTouches[0].screenX;
+                touchStartY = e.changedTouches[0].screenY;
+            }, { passive: false });
+
+            canvas.addEventListener('touchmove', (e) => {
+                if (gameState === 'PLAYING') {
+                    e.preventDefault(); // ゲームプレイ中の画面スクロールを防止
+                }
+            }, { passive: false });
+
+            canvas.addEventListener('touchend', (e) => {
+                if (gameState !== 'PLAYING') return;
+                let touchEndX = e.changedTouches[0].screenX;
+                let touchEndY = e.changedTouches[0].screenY;
+                handleSwipe(touchStartX, touchStartY, touchEndX, touchEndY);
+            });
+
+            drawInitialStatic();
+        }
+
+        // スワイプ方向の判定処理
+        function handleSwipe(startX, startY, endX, endY) {
+            const dx = endX - startX;
+            const dy = endY - startY;
+            const absDx = Math.abs(dx);
+            const absDy = Math.abs(dy);
+
+            // スワイプと判定する最小の移動距離
+            if (Math.max(absDx, absDy) > 30) {
+                if (absDx > absDy) {
+                    // 左右スワイプ
+                    if (dx > 0) {
+                        player.nextDx = 1; player.nextDy = 0; // 右
+                    } else {
+                        player.nextDx = -1; player.nextDy = 0; // 左
+                    }
+                } else {
+                    // 上下スワイプ
+                    if (dy > 0) {
+                        player.nextDx = 0; player.nextDy = 1; // 下
+                    } else {
+                        player.nextDx = 0; player.nextDy = -1; // 上
+                    }
+                }
+            }
+        }
+
+        function resetGame(fullReset = true) {
+            if (fullReset) {
+                score = 0;
+                lives = 3;
+                updateUI();
+                
+                // マップのディープコピーとドットカウント
+                currentMap = INITIAL_MAP.map(row => [...row]);
+                totalDots = 0;
+                eatenDots = 0;
+                for(let r=0; r<ROWS; r++) {
+                    for(let c=0; c<COLS; c++) {
+                        if(currentMap[r][c] === 1 || currentMap[r][c] === 2) totalDots++;
+                    }
+                }
+            }
+            
+            powerMode = false;
+            powerTimer = 0;
+
+            // 位置リセット
+            player.x = player.startX;
+            player.y = player.startY;
+            player.dx = 0; player.dy = 0;
+            player.nextDx = 0; player.nextDy = 0;
+            player.angle = -Math.PI/2;
+
+            enemies.forEach(e => {
+                e.x = e.startX;
+                e.y = e.startY;
+                e.dx = Math.random() < 0.5 ? 1 : -1;
+                e.dy = 0;
+            });
+        }
+
+        // --- 5. メインループ ---
+        function update() {
+            if (gameState !== 'PLAYING') return;
+
+            updatePlayer();
+            updateEnemies();
+            checkCollisions();
+
+            if (powerMode) {
+                powerTimer--;
+                if (powerTimer <= 0) powerMode = false;
+            }
+
+            draw();
+
+            if (eatenDots >= totalDots) {
+                handleGameEnd(true);
+            } else {
+                animationId = requestAnimationFrame(update);
+            }
+        }
+
+        // --- 6. 移動・ロジック ---
+        function updatePlayer() {
+            let atCenter = (player.x % TILE_SIZE === 15 && player.y % TILE_SIZE === 15);
+            
+            if (atCenter) {
+                let col = Math.floor(player.x / TILE_SIZE);
+                let row = Math.floor(player.y / TILE_SIZE);
+                
+                // ワープトンネル
+                if (col <= 0 && player.dx === -1) { col = COLS - 1; player.x = col * TILE_SIZE + 15; }
+                else if (col >= COLS - 1 && player.dx === 1) { col = 0; player.x = 15; }
+                
+                // 予約方向への転換
+                if (player.nextDx !== 0 || player.nextDy !== 0) {
+                    let nextCol = col + player.nextDx;
+                    let nextRow = row + player.nextDy;
+                    // 配列外アクセス防止
+                    if (nextRow >= 0 && nextRow < ROWS && nextCol >= 0 && nextCol < COLS) {
+                        if (currentMap[nextRow][nextCol] !== 0) {
+                            player.dx = player.nextDx;
+                            player.dy = player.nextDy;
+                            updatePlayerAngle();
+                        }
+                    }
+                }
+                
+                // 現在進行方向の壁チェック
+                let nextCol = col + player.dx;
+                let nextRow = row + player.dy;
+                if (nextRow >= 0 && nextRow < ROWS && nextCol >= 0 && nextCol < COLS) {
+                    if (currentMap[nextRow][nextCol] === 0) {
+                        player.dx = 0;
+                        player.dy = 0;
+                    }
+                }
+            }
+            
+            player.x += player.dx * player.speed;
+            player.y += player.dy * player.speed;
+
+            // アイテム取得
+            if (atCenter) {
+                let col = Math.floor(player.x / TILE_SIZE);
+                let row = Math.floor(player.y / TILE_SIZE);
+                if (row >= 0 && row < ROWS && col >= 0 && col < COLS) {
+                    if (currentMap[row][col] === 1) {
+                        currentMap[row][col] = 3;
+                        score += 10;
+                        eatenDots++;
+                        updateUI();
+                    } else if (currentMap[row][col] === 2) {
+                        currentMap[row][col] = 3;
+                        score += 50;
+                        eatenDots++;
+                        activatePowerMode();
+                        updateUI();
+                    }
+                }
+            }
+        }
+
+        function updatePlayerAngle() {
+            if (player.dx === 1) player.angle = 0;
+            else if (player.dx === -1) player.angle = Math.PI;
+            else if (player.dy === 1) player.angle = Math.PI / 2;
+            else if (player.dy === -1) player.angle = -Math.PI / 2;
+        }
+
+        function activatePowerMode() {
+            powerMode = true;
+            powerTimer = 600; // 60fps想定で約10秒
+        }
+
+        function updateEnemies() {
+            enemies.forEach(enemy => {
+                let atCenter = (enemy.x % TILE_SIZE === 15 && enemy.y % TILE_SIZE === 15);
+                if (atCenter) {
+                    let col = Math.floor(enemy.x / TILE_SIZE);
+                    let row = Math.floor(enemy.y / TILE_SIZE);
+                    
+                    let possibleMoves = [];
+                    const dirs = [{dx:0, dy:-1}, {dx:1, dy:0}, {dx:0, dy:1}, {dx:-1, dy:0}];
+                    
+                    dirs.forEach(d => {
+                        // 逆走防止
+                        if (d.dx === -enemy.dx && d.dy === -enemy.dy && (enemy.dx !== 0 || enemy.dy !== 0)) return;
+                        let nc = col + d.dx;
+                        let nr = row + d.dy;
+                        // トンネルには入らないように制限
+                        if (nr >= 0 && nr < ROWS && nc > 0 && nc < COLS - 1) {
+                            if (currentMap[nr][nc] !== 0) {
+                                possibleMoves.push(d);
+                            }
+                        }
+                    });
+                    
+                    if(possibleMoves.length === 0) {
+                        enemy.dx = -enemy.dx;
+                        enemy.dy = -enemy.dy;
+                    } else {
+                        // シンプルなランダムウォーク
+                        let move = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+                        enemy.dx = move.dx;
+                        enemy.dy = move.dy;
+                    }
+                }
+                
+                enemy.x += enemy.dx * enemy.speed;
+                enemy.y += enemy.dy * enemy.speed;
+            });
+        }
+
+        function checkCollisions() {
+            for (let enemy of enemies) {
+                let dist = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                if (dist < 15) {
+                    if (powerMode) {
+                        // 敵を食べる
+                        enemy.x = enemy.startX;
+                        enemy.y = enemy.startY;
+                        score += 200;
+                        updateUI();
+                    } else {
+                        // ダメージ
+                        handleDeath();
+                        break;
+                    }
+                }
+            }
+        }
+
+        function handleDeath() {
+            gameState = 'DYING';
+            lives--;
+            updateUI();
+            
+            if (lives <= 0) {
+                setTimeout(() => handleGameEnd(false), 500);
+            } else {
+                setTimeout(() => {
+                    resetPositionsOnly();
+                    gameState = 'PLAYING';
+                    update();
+                }, 1000);
+            }
+        }
+
+        function resetPositionsOnly() {
+            player.x = player.startX; player.y = player.startY;
+            player.dx = 0; player.dy = 0; player.nextDx = 0; player.nextDy = 0;
+            player.angle = -Math.PI/2;
+            enemies.forEach(e => {
+                e.x = e.startX; e.y = e.startY;
+                e.dx = Math.random() < 0.5 ? 1 : -1; e.dy = 0;
+            });
+            powerMode = false;
+        }
+
+        // --- 7. 描画処理 ---
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawMap();
+            drawDots();
+            
+            // パワーモード中は分裂した幻影を描画
+            if (powerMode) {
+                // 点滅効果
+                if (powerTimer > 120 || Math.floor(powerTimer / 10) % 2 === 0) {
+                    drawPlanaria(player.x - player.dx * 12, player.y - player.dy * 12, player.angle, true);
+                }
+            }
+            
+            // プレイヤーが死んだ時の簡単な演出（体が縮む）
+            if (gameState === 'DYING') {
+                ctx.globalAlpha = 0.5;
+            }
+            drawPlanaria(player.x, player.y, player.angle, false);
+            ctx.globalAlpha = 1.0;
+
+            enemies.forEach(enemy => {
+                // パワーモード終了間際は点滅
+                let isScared = powerMode;
+                if (powerMode && powerTimer < 120 && Math.floor(powerTimer / 10) % 2 !== 0) {
+                    isScared = false;
+                }
+                drawEnemy(enemy.x, enemy.y, enemy.color, isScared);
+            });
+        }
+
+        function drawInitialStatic() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            currentMap = INITIAL_MAP;
+            drawMap();
+            drawDots();
+            drawPlanaria(player.startX, player.startY, -Math.PI/2, false);
+            enemies.forEach(e => drawEnemy(e.startX, e.startY, e.color, false));
+        }
+
+        function drawMap() {
+            ctx.fillStyle = '#1e293b'; // 壁の色
+            for(let r=0; r<ROWS; r++) {
+                for(let c=0; c<COLS; c++) {
+                    if(currentMap[r][c] === 0) {
+                        ctx.beginPath();
+                        ctx.roundRect(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, 4);
+                        ctx.fill();
+                    }
+                }
+            }
+        }
+
+        function drawDots() {
+            for(let r=0; r<ROWS; r++) {
+                for(let c=0; c<COLS; c++) {
+                    let cx = c * TILE_SIZE + 15;
+                    let cy = r * TILE_SIZE + 15;
+                    if(currentMap[r][c] === 1) {
+                        ctx.fillStyle = '#fde047';
+                        ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2); ctx.fill();
+                    } else if(currentMap[r][c] === 2) {
+                        ctx.fillStyle = '#4ade80'; // 分裂薬（パワーエサ）
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = '#4ade80';
+                        ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI*2); ctx.fill();
+                        ctx.shadowBlur = 0; // リセット
+                    }
+                }
+            }
+        }
+
+        function drawPlanaria(x, y, angle, isGhost) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(angle);
+            if(isGhost) {
+                ctx.globalAlpha = 0.4;
+                ctx.filter = 'hue-rotate(90deg)'; // 幻影は色を変える
+            }
+            
+            // 体 (進行方向は右(x軸正方向)を基準に描画)
+            ctx.fillStyle = '#4ade80';
+            ctx.shadowBlur = isGhost ? 0 : 5;
+            ctx.shadowColor = '#4ade80';
+            ctx.beginPath();
+            ctx.moveTo(12, 0);   // 頭の先
+            ctx.lineTo(2, -9);   // 頭部横
+            ctx.lineTo(-14, -5); // 尾部
+            ctx.lineTo(-14, 5);  
+            ctx.lineTo(2, 9);
+            ctx.closePath();
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            
+            // 眼点(クロスアイっぽく)
+            ctx.fillStyle = 'white';
+            ctx.beginPath(); ctx.arc(4, -4, 2.5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(4, 4, 2.5, 0, Math.PI*2); ctx.fill();
+            
+            ctx.fillStyle = '#020617';
+            ctx.beginPath(); ctx.arc(4.5, -4, 1, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(4.5, 4, 1, 0, Math.PI*2); ctx.fill();
+            
+            ctx.restore();
+        }
+
+        function drawEnemy(x, y, color, isScared) {
+            ctx.save();
+            ctx.translate(x, y);
+            
+            ctx.fillStyle = isScared ? '#3b82f6' : color;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = ctx.fillStyle;
+            
+            // アメーバ・原生生物的なギザギザ
+            ctx.beginPath();
+            let spikes = 8;
+            for(let i=0; i<spikes; i++) {
+                let a = (i / spikes) * Math.PI * 2;
+                let r = (i % 2 === 0) ? 11 : 8;
+                let px = Math.cos(a) * r;
+                let py = Math.sin(a) * r;
+                if(i===0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            if(!isScared) {
+                ctx.fillStyle = 'white';
+                ctx.beginPath(); ctx.arc(-3, -2, 2.5, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(3, -2, 2.5, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = 'black';
+                ctx.beginPath(); ctx.arc(-3, -2, 1, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(3, -2, 1, 0, Math.PI*2); ctx.fill();
+            } else {
+                ctx.strokeStyle = '#93c5fd';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(-4, -2); ctx.lineTo(4, -2);
+                ctx.moveTo(-4, 2); ctx.lineTo(4, 2);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // --- 8. UI・イベント制御 ---
+        function updateUI() {
+            document.getElementById('scoreDisplay').innerText = score;
+            document.getElementById('livesDisplay').innerText = lives;
+        }
+
+        function handleActionBtn() {
+            const modal = document.getElementById('uiModal');
+            const aiContainer = document.getElementById('aiContainer');
+            
+            if (gameState === 'START' || gameState === 'GAMEOVER' || gameState === 'CLEAR') {
+                resetGame(true);
+                gameState = 'PLAYING';
+                modal.classList.add('opacity-0', 'pointer-events-none');
+                aiContainer.classList.add('hidden');
+                setTimeout(() => {
+                    document.getElementById('aiMessage').innerText = "通信中...";
+                }, 300);
+                update();
+            }
+        }
+
+        async function handleGameEnd(isClear) {
+            gameState = isClear ? 'CLEAR' : 'GAMEOVER';
+            cancelAnimationFrame(animationId);
+            
+            const modal = document.getElementById('uiModal');
+            const title = document.getElementById('modalTitle');
+            const btn = document.getElementById('actionBtn');
+            const aiContainer = document.getElementById('aiContainer');
+            
+            modal.classList.remove('opacity-0', 'pointer-events-none');
+            title.innerText = isClear ? 'STAGE CLEAR!' : 'GAME OVER';
+            title.className = isClear ? 'text-4xl font-bold mb-6 text-yellow-400 tracking-widest uppercase shadow-black drop-shadow-lg' 
+                                      : 'text-4xl font-bold mb-6 text-red-500 tracking-widest uppercase shadow-black drop-shadow-lg';
+            btn.innerText = isClear ? 'Next Evolution' : 'Try Again';
+            
+            aiContainer.classList.remove('hidden');
+            
+            // AIメッセージ取得
+            const promptStr = isClear 
+                ? `私はプラナリアの迷路ゲームをクリアしました。スコアは${score}です。プラナリアの視点から、再生や進化をテーマにした独特な祝福のメッセージを2〜3文で短くください。`
+                : `私はプラナリアの迷路ゲームでゲームオーバーになりました。スコアは${score}です。プラナリアの視点から、分裂や再生をテーマにした次への励ましのメッセージを2〜3文で短くください。`;
+
+            try {
+                const res = await fetch(WORKER_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: promptStr })
+                });
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    let msg = "再生の時は来る...";
+                    
+                    // 様々なレスポンス形式へのフォールバック
+                    if (data.response) msg = data.response;
+                    else if (data.text) msg = data.text;
+                    else if (data.choices && data.choices[0] && data.choices[0].message) msg = data.choices[0].message.content;
+                    else if (typeof data === 'string') msg = data;
+                    
+                    document.getElementById('aiMessage').innerText = `「${msg.trim()}」`;
+                } else {
+                    document.getElementById('aiMessage').innerText = "（思念の受信に失敗しました。自己再生システムのみ稼働中...）";
+                }
+            } catch (err) {
+                document.getElementById('aiMessage').innerText = "（ネットワーク障害により思念のリンクが途絶えました...）";
+            }
+        }
+
+        // 起動
+        window.onload = init;
+
+    </script>
+</body>
+</html>
