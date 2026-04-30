@@ -32,6 +32,22 @@
         .btn-glow:hover {
             animation: pulse-glow 2s infinite;
         }
+        .control-btn {
+            width: 72px; height: 72px; border-radius: 18px;
+            background: linear-gradient(180deg, #16a34a, #047857);
+            color: white; font-size: 30px; font-weight: 900;
+            box-shadow: 0 8px 0 #064e3b, 0 0 20px rgba(34,197,94,.25);
+            touch-action: manipulation; user-select: none;
+        }
+        .control-btn:active { transform: translateY(5px); box-shadow: 0 3px 0 #064e3b; }
+        .status-pill { min-width: 5.5rem; text-align: center; }
+        @media (max-width: 520px) {
+            body { justify-content: flex-start; padding: 12px; }
+            header { margin-bottom: 12px; }
+            header h1 { font-size: 2.25rem; }
+            #gameCanvas { width: min(94vw, 450px); height: auto; }
+            .control-btn { width: 68px; height: 68px; }
+        }
     </style>
 </head>
 <body class="min-h-screen flex flex-col items-center justify-center p-4 text-slate-200 font-sans">
@@ -40,9 +56,9 @@
         <h1 class="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-emerald-600 mb-3 tracking-wider drop-shadow-md">
             Planaria Maze
         </h1>
-        <div class="flex justify-center gap-8 text-xl font-bold bg-slate-900/80 px-6 py-2 rounded-full border border-slate-700 shadow-lg">
-            <div>Score: <span id="scoreDisplay" class="text-yellow-400">0</span></div>
-            <div>Lives: <span id="livesDisplay" class="text-red-400">3</span></div>
+        <div class="flex justify-center gap-3 text-lg font-bold bg-slate-900/80 px-4 py-2 rounded-full border border-slate-700 shadow-lg">
+            <div class="status-pill">得点 <span id="scoreDisplay" class="text-yellow-400">0</span></div>
+            <div class="status-pill">残機 <span id="livesDisplay" class="text-red-400">3</span></div>
         </div>
     </header>
 
@@ -52,10 +68,16 @@
         
         <!-- UI Modal Overlay -->
         <div id="uiModal" class="absolute inset-0 bg-slate-950/80 modal-blur flex flex-col items-center justify-center rounded-xl z-10 transition-opacity duration-300">
-            <h2 id="modalTitle" class="text-4xl font-bold mb-6 text-green-400 tracking-widest uppercase shadow-black drop-shadow-lg">Ready?</h2>
-            
-            <button id="actionBtn" class="px-8 py-3 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 rounded-lg text-white font-bold text-xl transition-all transform hover:scale-105 btn-glow shadow-lg shadow-green-900/50">
-                Start Game
+            <h2 id="modalTitle" class="text-4xl font-bold mb-4 text-green-400 tracking-widest uppercase shadow-black drop-shadow-lg">Ready?</h2>
+            <div class="mb-5 px-5 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-left text-sm leading-7 max-w-sm">
+                <p class="font-bold text-green-300 mb-1">遊び方</p>
+                <p>① 黄色いドットを全部食べる</p>
+                <p>② 敵に当たると残機が減る</p>
+                <p>③ 緑の大きいエサ中は敵を食べられる</p>
+            </div>
+
+            <button id="actionBtn" class="px-8 py-4 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 rounded-xl text-white font-bold text-xl transition-all transform hover:scale-105 btn-glow shadow-lg shadow-green-900/50">
+                ゲーム開始
             </button>
             
             <!-- AI Message Section -->
@@ -72,13 +94,19 @@
         </div>
     </div>
 
-    <div class="mt-8 max-w-lg text-center bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow-md">
-        <p class="text-slate-300 mb-2 font-medium">🎮 [矢印キー] または [スワイプ] でプラナリアを操作</p>
-        <p class="text-sm text-slate-400">
-            黄色いドットを全て食べるとクリア。<br>
-            緑の<strong class="text-green-400">分裂薬（パワーエサ）</strong>を食べると、一時的に分裂して無敵状態になり、外敵を捕食できます！
+    <section class="mt-5 w-full max-w-lg bg-slate-900/85 p-4 rounded-xl border border-slate-800 shadow-md">
+        <p class="text-center text-slate-200 font-bold mb-3">方向ボタンで操作できます</p>
+        <div class="grid grid-cols-3 gap-3 justify-items-center mx-auto w-fit" aria-label="方向操作ボタン">
+            <div></div><button class="control-btn" data-dir="up" aria-label="上へ移動">▲</button><div></div>
+            <button class="control-btn" data-dir="left" aria-label="左へ移動">◀</button>
+            <button id="pauseBtn" class="control-btn text-lg" aria-label="一時停止">停止</button>
+            <button class="control-btn" data-dir="right" aria-label="右へ移動">▶</button>
+            <div></div><button class="control-btn" data-dir="down" aria-label="下へ移動">▼</button><div></div>
+        </div>
+        <p class="mt-4 text-sm text-slate-400 text-center leading-6">
+            スワイプ・矢印キーも使えます。曲がり角の少し前に押すと、次の角で自動的に曲がります。
         </p>
-    </div>
+    </section>
 
     <script>
         // --- 1. 定数・設定 ---
@@ -124,6 +152,14 @@
         let touchStartX = 0;
         let touchStartY = 0;
 
+        function setDirection(dir) {
+            if (gameState !== 'PLAYING') return;
+            if (dir === 'up')    { player.nextDx = 0;  player.nextDy = -1; }
+            if (dir === 'down')  { player.nextDx = 0;  player.nextDy = 1; }
+            if (dir === 'left')  { player.nextDx = -1; player.nextDy = 0; }
+            if (dir === 'right') { player.nextDx = 1;  player.nextDy = 0; }
+        }
+
         // --- 3. エンティティ定義 ---
         const player = {
             x: 0, y: 0, dx: 0, dy: 0, nextDx: 0, nextDy: 0, speed: 1.5,
@@ -148,10 +184,10 @@
             window.addEventListener('keydown', (e) => {
                 if (gameState !== 'PLAYING') return;
                 switch(e.key) {
-                    case 'ArrowUp':    player.nextDx = 0; player.nextDy = -1; e.preventDefault(); break;
-                    case 'ArrowDown':  player.nextDx = 0; player.nextDy = 1; e.preventDefault(); break;
-                    case 'ArrowLeft':  player.nextDx = -1; player.nextDy = 0; e.preventDefault(); break;
-                    case 'ArrowRight': player.nextDx = 1; player.nextDy = 0; e.preventDefault(); break;
+                    case 'ArrowUp':    setDirection('up'); e.preventDefault(); break;
+                    case 'ArrowDown':  setDirection('down'); e.preventDefault(); break;
+                    case 'ArrowLeft':  setDirection('left'); e.preventDefault(); break;
+                    case 'ArrowRight': setDirection('right'); e.preventDefault(); break;
                 }
             });
 
@@ -578,6 +614,12 @@
             const modal = document.getElementById('uiModal');
             const aiContainer = document.getElementById('aiContainer');
             
+            if (gameState === 'PAUSED') {
+                gameState = 'PLAYING';
+                modal.classList.add('opacity-0', 'pointer-events-none');
+                update();
+                return;
+            }
             if (gameState === 'START' || gameState === 'GAMEOVER' || gameState === 'CLEAR') {
                 resetGame(true);
                 gameState = 'PLAYING';
@@ -603,7 +645,7 @@
             title.innerText = isClear ? 'STAGE CLEAR!' : 'GAME OVER';
             title.className = isClear ? 'text-4xl font-bold mb-6 text-yellow-400 tracking-widest uppercase shadow-black drop-shadow-lg' 
                                       : 'text-4xl font-bold mb-6 text-red-500 tracking-widest uppercase shadow-black drop-shadow-lg';
-            btn.innerText = isClear ? 'Next Evolution' : 'Try Again';
+            btn.innerText = isClear ? '次へ / もう一度' : 'もう一度あそぶ';
             
             aiContainer.classList.remove('hidden');
             
